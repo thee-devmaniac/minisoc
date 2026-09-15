@@ -1,0 +1,23 @@
+# Secrets — never commit
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Node / frontend (created later, Milestone 6+)
+node_modules/
+.next/
+
+# Docker
+*.log
+
+# OS
+.DS_Store
+
+# Capture handoff volume artifacts if ever bind-mounted locally
+/var/minisoc/

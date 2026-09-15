@@ -1,0 +1,82 @@
+# Phase 5 goal: prove the topology comes up cleanly.
+# No detection logic, no real telemetry yet — just healthy containers
+# that can see the network layout we designed in the LLD (§4, §8).
+
+networks:
+  lab_net:
+    driver: bridge
+    internal: false   # build-time package installs need egress; no other egress is used
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24   # fixed so discovery scans have a predictable target
+
+services:
+
+  db:
+    image: postgres:16-alpine
+    container_name: minisoc_db
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - lab_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  platform:
+    build: ./platform
+    container_name: minisoc_platform
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - capture_events:/var/minisoc/capture   # shared handoff volume, see LLD §8
+    networks:
+      - lab_net
+
+  target:
+    build: ./target
+    container_name: minisoc_target
+    restart: unless-stopped
+    networks:
+      - lab_net
+    # SSH exposed only inside lab_net, never published to the host
+
+  attacker:
+    build: ./attacker
+    container_name: minisoc_attacker
+    # deliberately NOT restart:always — attacker runs are manual, on-demand
+    # e.g. docker compose run attacker ./scripts/run_portscan.sh
+    networks:
+      - lab_net
+    depends_on:
+      - target
+
+  capture:
+    build: ./capture
+    container_name: minisoc_capture
+    restart: unless-stopped
+    network_mode: "service:target"   # so capture can observe target's traffic — see LLD §4 open question
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    volumes:
+      - capture_events:/var/minisoc/capture
+    depends_on:
+      - target
+
+volumes:
+  db_data:
+  capture_events:

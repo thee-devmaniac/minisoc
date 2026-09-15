@@ -1,0 +1,7 @@
+[tool.pytest.ini_options]
+# Points sys.path at platform/'s contents (not the platform/ folder itself),
+# so tests import `discovery.nmap_scanner` etc. exactly as main.py does
+# inside the container. Deliberately NOT adding repo root to pythonpath —
+# that would let `platform/` shadow Python's stdlib `platform` module.
+pythonpath = ["platform"]
+testpaths = ["tests"]
