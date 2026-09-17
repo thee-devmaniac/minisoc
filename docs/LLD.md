@@ -1,7 +1,10 @@
 # Low-Level Design — Network Intrusion Detection & Security Monitoring Platform (MVP)
 
-Status: Baseline agreed. Implementation not yet started.
-Scope: This document covers the MVP only. Version 2 and Advanced features are named but not designed here.
+Status: MVP complete and verified end-to-end (Milestones 1–5). Version 2 Phase 1
+(correlation) also complete and verified. See §10 for what's built vs. remaining,
+and §9 for what's still ahead in Version 2.
+Scope: This document covers the MVP and completed Version 2 work in detail.
+Remaining Version 2/Advanced features are named but not designed until picked up.
 
 ---
 
@@ -162,12 +165,32 @@ Note: `SecurityEvent` and `Alert` are the same row for MVP. The split arrives wi
 
 ---
 
-## 6. Database Schema (MVP)
+## 6. Database Schema (MVP + Version 2 Phase 1)
+
+**Implementation deviations from the original design, made for concrete reasons
+hit during build — not aspirational, these already shipped:**
+- `ip_address`/`source_ip`/`dest_ip` are `String`, not Postgres's native `inet`
+  type. Comparing `inet` against a plain Python string parameter fails at the
+  driver level (`operator does not exist: inet = character varying`) unless
+  every query explicitly casts the bind parameter — hit this for real during
+  Milestone 1. `inet`'s real advantage (subnet-containment operators) isn't
+  needed anywhere in the current roadmap.
+- `security_events` has no `category` column — it's reachable via `rule_id` →
+  `detection_rules.category`, so storing it again would just be duplicated,
+  driftable data.
+- `security_events.last_seen_at` was added during Version 2 Phase 1
+  (correlation) — distinct from `created_at` (first detection time), tracks
+  when an ongoing incident was last reconfirmed. Uses SQLAlchemy's
+  `onupdate=func.now()`, refreshed automatically on every correlated update.
+- `collector_state` was added after Milestone 5, fixing a real bug: platform
+  restarts were re-reading both shared telemetry files from byte 0 and
+  re-detecting already-seen events. Not part of the original design — a
+  necessary addition once the gap was found running the system live.
 
 ### `devices`
 ```
 id            uuid PK
-ip_address    inet
+ip_address    string
 hostname      text, nullable
 open_ports    int[]
 first_seen    timestamptz
@@ -177,9 +200,9 @@ last_seen     timestamptz
 ### `raw_events`  (audit trail — indexed on (event_type, source_ip, occurred_at))
 ```
 id            uuid PK
-event_type    text        -- 'tcp_syn' | 'ssh_auth_failure'
-source_ip     inet
-dest_ip       inet, nullable
+event_type    text        -- 'tcp_syn' | 'ssh_auth_failure' | 'ssh_auth_success'
+source_ip     string
+dest_ip       string, nullable
 dest_port     int, nullable
 occurred_at   timestamptz
 raw_payload   jsonb
@@ -187,36 +210,46 @@ raw_payload   jsonb
 
 ### `detection_rules`  (metadata only — logic lives in code)
 ```
-id                text PK   -- e.g. 'port_scan_v1'
+id                text PK   -- 'port_scan_v1' | 'brute_force_v1'
 name              text
 description       text
-category          text      -- 'reconnaissance' | 'credential_access' | ...
+category          text      -- 'reconnaissance' | 'credential_access'
 default_severity  int
 enabled           boolean
 ```
 
-### `security_events`  (event + alert collapsed for MVP)
+### `security_events`  (event + alert collapsed for MVP; one row per incident as of Version 2 Phase 1)
 ```
 id                uuid PK
 rule_id           text FK -> detection_rules
 severity_score    int          -- 0-100, source of truth
 severity_label    text         -- derived from score, stored for query convenience
-source_ip         inet
+source_ip         string
 target_device_id  uuid FK -> devices, nullable
 description       text
 event_count       int
-window_start      timestamptz
-window_end        timestamptz
-created_at        timestamptz
-evidence_ids      uuid[]       -- -> raw_events
+window_start      timestamptz  -- first-detection time; never updated by correlation
+window_end        timestamptz  -- advances with each correlated update
+created_at        timestamptz  -- first-detection time (row creation)
+last_seen_at      timestamptz  -- last time this incident was reconfirmed (auto-updated)
+evidence_ids      uuid[]       -- -> raw_events, appended to on each correlated update
 acknowledged      boolean default false
 ```
 
-**Severity model:** numeric score (0–100) is the source of truth; `severity_label` is a derived enum (e.g., 0–30 low, 31–60 medium, 61–85 high, 86–100 critical) computed via one shared mapping function — never allowed to drift independently from the score. Confidence is folded into the single score for MVP; splitting severity vs. confidence into separate fields is a named Version 2 refinement.
+### `collector_state`  (added post-Milestone 5 — not in the original design)
+```
+collector_id  text PK    -- 'capture_events' | 'auth_log'
+offset        bigint
+updated_at    timestamptz
+```
 
-**Known seam:** `raw_events` grows fast even in a small lab. No retention policy for MVP — flagged as a decision point before this goes anywhere near production-like volume.
+**Severity model:** numeric score (0–100) is the source of truth; `severity_label` is a derived enum (0–30 low, 31–60 medium, 61–85 high, 86–100 critical) computed via one shared mapping function — never allowed to drift independently from the score. Confidence is still folded into the single score; splitting severity vs. confidence into separate fields remains a named, not-yet-done Version 2 item (see §9).
 
-**Deliberately not modeled yet:** `alerts` (separate from events), `users`/auth, `threat_intel_indicators`.
+**Correlation (Version 2 Phase 1, done):** a new detection merges into an existing `security_events` row when `rule_id` + `source_ip` match and the gap since that row's `window_end` is within the rule's own `window_seconds` — no separately invented correlation constant. Verified via `tests/integration/test_correlation.py` against real Postgres: rapid detections merge into one row, a gap past the rule's window opens a new incident, different source IPs never cross-contaminate. Deliberately NOT doing cross-rule correlation (e.g. treating simultaneous `port_scan_v1` + `brute_force_v1` from one source as one campaign) — named as a future step, not solved here.
+
+**Known seam:** `raw_events` grows fast even in a small lab. No retention policy — flagged as a decision point before this goes anywhere near production-like volume.
+
+**Deliberately not modeled yet:** `alerts` as distinct from `security_events`, `users`/auth, `threat_intel_indicators`.
 
 ---
 
@@ -264,27 +297,55 @@ class DetectionRule:
 
 ---
 
-## 9. What Changes in Version 2 (named, not designed)
+## 9. Version 2 — Done vs. Remaining
 
-- `security_events` splits into `events` (raw detections) + `alerts` (correlated/deduped groupings)
-- Correlation logic: e.g., repeated brute-force detections from one IP within a window → one alert with a count, not N rows
-- Severity/confidence split into separate fields
-- API authentication
-- Dashboard replaces bare list view
+**Phase 1 — Correlation: done.** Implemented in `DetectionEngine.process()` +
+`repository.find_correlatable_event()`/`update_security_event()`. Rather than
+splitting into separate `events`/`alerts` tables as originally sketched, one
+`security_events` row now serves as the incident record directly, correlated
+in place — simpler than the original two-table sketch, and sufficient for
+same-rule dedup. Verified against real Postgres (`tests/integration/test_correlation.py`)
+and against live traffic (a 15-port scan now produces exactly one row).
+
+**Remaining, not yet designed in detail:**
+- Severity/confidence split into separate fields (score currently conflates both)
+- API authentication (documented MVP gap, still open)
+- Dashboard replacing the bare JSON list (Milestone 6+)
 - Additional rules: connection bursts, unexpected exposed services
+- Cross-rule correlation (e.g. simultaneous `port_scan_v1` + `brute_force_v1`
+  from one source treated as one campaign) — deliberately deferred past
+  Phase 1's same-rule correlation, named as a distinct future step
+- Collector offset persistence exists (`collector_state`) but rule-level
+  in-process windowed state (e.g. `PortWindowTracker`) still resets on
+  restart — a real, currently-accepted gap: an attack spanning a restart
+  may split into two incidents rather than one, since the rule has to
+  re-accumulate its threshold from scratch after restart
 
 ---
 
-## 10. Milestone Roadmap (MVP)
+## 10. Milestone Roadmap
 
-1. Lab environment: Compose network, target + attacker containers, resolve capture's traffic-visibility approach
-2. Nmap discovery → device inventory in Postgres
-3. Scapy capture → raw connection-attempt logging (no detection yet)
-4. First detection rule: port scan, built against the `DetectionRule` interface
-5. SSH auth log ingestion → brute-force detection
-6. Minimal read-only API + bare alert list
+### MVP — all complete, verified live and via automated tests
+1. ✅ Lab environment: Compose network, target + attacker containers. Traffic
+   visibility resolved via `network_mode: service:target` for `capture`.
+2. ✅ Nmap discovery → device inventory in Postgres. Uses `-sT` (TCP connect),
+   not `-sS` — keeps `platform` unprivileged (§3.3/§8).
+3. ✅ Scapy capture (SYN packets only) → shared-volume JSON-lines handoff.
+4. ✅ `port_scan_v1` — distinct-port threshold within a rolling window.
+5. ✅ SSH auth log ingestion (`target`'s stderr → shared volume, timestamped)
+   → `brute_force_v1`.
+6. ✅ Read-only API (`/devices`, `/security-events`) — bare JSON, no
+   dashboard yet (still Milestone 6+, now folded into Version 2 remaining work).
 
-Each milestone: objective → security concept learned → architecture impact → implementation → tests → manual verification → security review → docs. No milestone starts until the previous one works and is understood, not just running.
+### Version 2 — in progress
+- ✅ **Phase 0 (unplanned, necessary):** collector offset persistence — a real
+  bug found running the system live (restarts re-detected old events),
+  fixed before correlation work began so correlation could be verified
+  against trustworthy data.
+- ✅ **Phase 1:** same-rule correlation (§9).
+- ⬜ Everything else listed in §9's "Remaining" section.
+
+Each milestone: objective → security concept learned → architecture impact → implementation → tests → manual verification → security review → docs. No milestone starts until the previous one works and is understood, not just running — this discipline caught real bugs at each step (an unhandled Nmap timeout, an `INET`/driver mismatch, a missing rule-registration FK violation in a test fixture) rather than letting them surface later, tangled up with other changes.
 
 ---
 

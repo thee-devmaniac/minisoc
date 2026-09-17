@@ -16,6 +16,7 @@ import uuid
 
 from sqlalchemy import (
     ARRAY,
+    BigInteger,
     Boolean,
     Column,
     DateTime,
@@ -39,7 +40,8 @@ class Device(Base):
     hostname = Column(String, nullable=True)
     open_ports = Column(ARRAY(Integer), nullable=False, default=list)
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
-    last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    last_seen = Column(DateTime(timezone=True),
+                       server_default=func.now(), onupdate=func.now())
 
 
 class RawEventRow(Base):
@@ -54,7 +56,8 @@ class RawEventRow(Base):
     raw_payload = Column(JSONB, nullable=False)
 
     __table_args__ = (
-        Index("ix_raw_events_type_source_time", "event_type", "source_ip", "occurred_at"),
+        Index("ix_raw_events_type_source_time",
+              "event_type", "source_ip", "occurred_at"),
     )
 
 
@@ -77,11 +80,28 @@ class SecurityEventRow(Base):
     severity_score = Column(Integer, nullable=False)
     severity_label = Column(String, nullable=False)
     source_ip = Column(String, nullable=False)
-    target_device_id = Column(UUID(as_uuid=True), ForeignKey("devices.id"), nullable=True)
+    target_device_id = Column(
+        UUID(as_uuid=True), ForeignKey("devices.id"), nullable=True)
     description = Column(String, nullable=False)
     event_count = Column(Integer, nullable=False)
     window_start = Column(DateTime(timezone=True), nullable=False)
     window_end = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    evidence_ids = Column(ARRAY(UUID(as_uuid=True)), nullable=False, default=list)
+    last_seen_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )  # refreshed automatically whenever correlation updates this row
+    evidence_ids = Column(ARRAY(UUID(as_uuid=True)),
+                          nullable=False, default=list)
     acknowledged = Column(Boolean, nullable=False, default=False)
+
+
+class CollectorStateRow(Base):
+    """Persists each collector's read offset across platform restarts.
+    Fixes the Milestone 2/3 gap where capture_client/log_tailer always
+    started from byte 0, re-detecting already-seen events on every restart."""
+    __tablename__ = "collector_state"
+
+    collector_id = Column(String, primary_key=True)
+    offset = Column(BigInteger, nullable=False, default=0)
+    updated_at = Column(DateTime(timezone=True),
+                        server_default=func.now(), onupdate=func.now())

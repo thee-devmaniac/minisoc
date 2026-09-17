@@ -15,4 +15,10 @@ RUN useradd -m -s /bin/bash labuser && \
 
 EXPOSE 22
 
-CMD ["/usr/sbin/sshd", "-D", "-e"]
+# sshd -e sends log lines (including auth failures) to stderr instead of
+# syslog. We capture that stream, prepend a UTC timestamp per line (sshd -e
+# output has none by itself), and append to a shared volume file that
+# platform's log_tailer.py polls — same handoff pattern as capture's
+# JSON-lines volume, different data source. This avoids giving platform any
+# Docker-socket access just to read another container's logs.
+CMD ["/bin/sh", "-c", "mkdir -p /var/log/minisoc && /usr/sbin/sshd -D -e 2>&1 | while IFS= read -r line; do printf '%s %s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$line\"; done >> /var/log/minisoc/auth.log"]

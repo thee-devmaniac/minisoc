@@ -30,3 +30,27 @@ class PortWindowTracker:
         ports = {port for _, port in dq}
         earliest = dq[0][0] if dq else occurred_at
         return ports, earliest
+
+
+class CountWindowTracker:
+    """Per-source_ip sliding window that counts events, not distinct values —
+    used by rules like brute-force where every attempt counts (unlike
+    PortWindowTracker, where only distinct ports matter)."""
+
+    def __init__(self, window_seconds: int):
+        self.window = timedelta(seconds=window_seconds)
+        self._events: dict[str, deque] = defaultdict(deque)
+
+    def record(self, source_ip: str, occurred_at: datetime) -> tuple[int, datetime]:
+        """Records an event for this source, prunes anything older than the
+        window, and returns (count still in window, earliest timestamp
+        still in window)."""
+        dq = self._events[source_ip]
+        dq.append(occurred_at)
+
+        cutoff = occurred_at - self.window
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+
+        earliest = dq[0] if dq else occurred_at
+        return len(dq), earliest

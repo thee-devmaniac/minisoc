@@ -1,7 +1,8 @@
 #!/bin/bash
-# Phase 5 placeholder. Real usage (Milestone 5) will run something like:
-#   hydra -l labuser -P /path/to/wordlist target ssh
-# against the target container over lab_net, generating real auth.log entries.
+# Milestone 5: real usage, replacing the earlier placeholder.
+# Runs hydra against target's SSH service with a small local wordlist of
+# deliberately wrong passwords, generating real "Failed password" lines in
+# target's auth log for brute_force_v1 to detect.
 set -euo pipefail
-echo "[run_bruteforce] placeholder — see docs/DETECTION_RULES.md once brute_force_v1 exists"
-echo "[run_bruteforce] example manual command: hydra -l labuser -P wordlist.txt ssh://target"
+echo "[run_bruteforce] running hydra against target:22"
+hydra -l labuser -P /scripts/wordlist.txt -t 4 ssh://target

@@ -18,6 +18,7 @@ def _serialize(e) -> dict:
         "window_start": e.window_start.isoformat() if e.window_start else None,
         "window_end": e.window_end.isoformat() if e.window_end else None,
         "created_at": e.created_at.isoformat() if e.created_at else None,
+        "last_seen_at": e.last_seen_at.isoformat() if e.last_seen_at else None,
         "acknowledged": e.acknowledged,
     }
 

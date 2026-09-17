@@ -128,3 +128,73 @@ def list_security_events(session: Session, limit: int = 100) -> list[models.Secu
         .limit(limit)
     )
     return list(session.execute(stmt).scalars())
+
+
+def get_offset(session: Session, collector_id: str) -> int:
+    """Returns 0 for a collector that's never been seen before — the
+    correct behavior for first-ever startup, distinct from a restart."""
+    row = session.get(models.CollectorStateRow, collector_id)
+    return row.offset if row else 0
+
+
+def set_offset(session: Session, collector_id: str, offset: int) -> None:
+    row = session.get(models.CollectorStateRow, collector_id)
+    if row:
+        row.offset = offset
+    else:
+        row = models.CollectorStateRow(
+            collector_id=collector_id, offset=offset)
+        session.add(row)
+    session.commit()
+
+
+def find_correlatable_event(
+    session: Session,
+    rule_id: str,
+    source_ip: str,
+    gap_seconds: int,
+    before_time: datetime,
+):
+    """Finds the most recent security_event for this rule+source whose
+    window_end is within gap_seconds of before_time. Returns None if no
+    such row exists, or if the gap exceeds the rule's own window — i.e.
+    the incident is considered closed and a new one should be opened
+    (Version 2 Phase 1 correlation, anchored to the rule's own window
+    rather than a separately invented constant)."""
+    stmt = (
+        select(models.SecurityEventRow)
+        .where(models.SecurityEventRow.rule_id == rule_id)
+        .where(models.SecurityEventRow.source_ip == source_ip)
+        .order_by(models.SecurityEventRow.window_end.desc())
+        .limit(1)
+    )
+    candidate = session.execute(stmt).scalar_one_or_none()
+    if candidate is None:
+        return None
+
+    gap = (before_time - candidate.window_end).total_seconds()
+    if gap <= gap_seconds:
+        return candidate
+    return None
+
+
+def update_security_event(
+    session: Session,
+    event_row: models.SecurityEventRow,
+    *,
+    event_count: int,
+    window_end: datetime,
+    description: str,
+    new_evidence_id,
+) -> models.SecurityEventRow:
+    """Updates an existing incident row in place rather than inserting a
+    new one. window_start and created_at are deliberately left untouched —
+    they mark when the incident was first detected, not last reconfirmed
+    (last_seen_at, via the column's onupdate, covers that)."""
+    event_row.event_count = event_count
+    event_row.window_end = window_end
+    event_row.description = description
+    event_row.evidence_ids = list(event_row.evidence_ids) + [new_evidence_id]
+    session.commit()
+    session.refresh(event_row)
+    return event_row

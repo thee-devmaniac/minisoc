@@ -35,3 +35,25 @@ def normalize_capture_event(raw: dict) -> RawEvent | None:
         )
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def normalize_log_event(raw: dict) -> RawEvent | None:
+    """Normalizes a dict from log_tailer.py's auth-log parsing into a
+    RawEvent. dest_ip/dest_port are left None — the log line only tells us
+    who connected and from where, not which local service/port (we know
+    it's always target's sshd, but the schema doesn't need that duplicated
+    here)."""
+    try:
+        occurred_at = datetime.strptime(raw["ts_str"], "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+        return RawEvent(
+            event_type=raw["type"],
+            source_ip=raw["source_ip"],
+            dest_ip=None,
+            dest_port=None,
+            occurred_at=occurred_at,
+            raw_payload=raw,
+        )
+    except (KeyError, TypeError, ValueError):
+        return None

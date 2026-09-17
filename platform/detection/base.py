@@ -32,6 +32,10 @@ class SecurityEventDraft:
 class DetectionRule(Protocol):
     id: str
     subscribes_to: list[str]
+    # used by the engine for correlation (Version 2 Phase 1) —
+    window_seconds: int
+    # an incident is "still open" if the gap since its last
+    # contributing event is within this rule's own window
 
     def evaluate(self, event: RawEvent) -> SecurityEventDraft | None:
         ...

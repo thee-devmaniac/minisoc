@@ -25,6 +25,14 @@ services:
       - db_data:/var/lib/postgresql/data
     networks:
       - lab_net
+    ports:
+      - "5433:5432"   # dev convenience only: host port 5433 avoids colliding
+                       # with any natively-installed Postgres on 5432. Lets
+                       # host-run pytest reach this container's Postgres
+                       # directly (tests/ is never copied into the platform
+                       # image, so integration tests can't run inside it —
+                       # see tests/integration/test_correlation.py).
+                       # Never do this outside a local lab environment.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
@@ -43,6 +51,7 @@ services:
       - "8000:8000"
     volumes:
       - capture_events:/var/minisoc/capture   # shared handoff volume, see LLD §8
+      - auth_log:/var/log/minisoc             # target's auth log, see Milestone 5 handoff design
     networks:
       - lab_net
 
@@ -52,6 +61,8 @@ services:
     restart: unless-stopped
     networks:
       - lab_net
+    volumes:
+      - auth_log:/var/log/minisoc
     # SSH exposed only inside lab_net, never published to the host
 
   attacker:
@@ -80,3 +91,4 @@ services:
 volumes:
   db_data:
   capture_events:
+  auth_log:

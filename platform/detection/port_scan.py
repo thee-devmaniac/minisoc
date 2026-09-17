@@ -22,6 +22,7 @@ BASE_SEVERITY = 60
 class PortScanRule:
     id = RULE_ID
     subscribes_to = ["tcp_syn"]
+    window_seconds = WINDOW_SECONDS
 
     def __init__(self):
         self._tracker = PortWindowTracker(window_seconds=WINDOW_SECONDS)
